@@ -102,16 +102,33 @@ function packEntries(pack: Buffer): PackEntry[] {
   const entries: PackEntry[] = [];
 
   const candidatesAt = (off: number, declared: number): Array<{ consumed: number; data: Buffer }> => {
-    // out.length reaches `declared` at the true stream end E and STAYS there for every larger prefix
-    // (zlib ignores trailing bytes), so the candidate set is {E} or {E, E+1} — collect at most two.
-    const found: Array<{ consumed: number; data: Buffer }> = [];
-    for (let k = 2; k <= pack.length - off && found.length < 2; k++) {
+    // inflateSync succeeds only once the zlib stream is COMPLETE (it validates the adler trailer),
+    // so the true end E is the smallest prefix that inflates without throwing — binary search it:
+    // success is monotone in k (a complete stream stays complete when extended). O(log L) inflates.
+    let lo = 2;
+    let hi = pack.length - off;
+    let data: Buffer | null = null;
+    let first = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
       try {
-        const out = inflateSync(pack.subarray(off, off + k));
-        if (out.length === declared) found.push({ consumed: k, data: out });
-        if (out.length > declared) break;
-      } catch { /* incomplete prefix: keep scanning */ }
+        const out = inflateSync(pack.subarray(off, off + mid));
+        if (out.length !== declared) return []; // completed stream has wrong size: not an entry here
+        data = out;
+        first = mid;
+        hi = mid - 1;
+      } catch {
+        lo = mid + 1;
+      }
     }
+    if (first === -1 || data === null) return [];
+    const found = [{ consumed: first, data }];
+    // a one-byte-larger prefix also "completes" (trailing bytes ignored): keep it as a fallback
+    // candidate for the rare zlib build that needs one extra byte to confirm end-of-stream
+    try {
+      const out2 = inflateSync(pack.subarray(off, off + first + 1));
+      if (out2.length === declared) found.push({ consumed: first + 1, data: out2 });
+    } catch { /* no extra candidate */ }
     return found;
   };
 
