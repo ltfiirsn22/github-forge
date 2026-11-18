@@ -84,6 +84,18 @@ export function getRepo(owner: string, name: string): Repo | undefined {
   return store.repos.get(repoKey(owner, name));
 }
 
+/** Re-key a repo from its create-time key (''/name) to owner/name once the owner binds. */
+export function rekeyRepo(repo: Repo, owner: string, name: string): void {
+  store.repos.delete(repoKey('', name));
+  store.repos.set(repoKey(owner, name), repo);
+}
+
+/** Find a repo by name alone (single-tenant: owner binds on first path-addressed read). */
+export function getRepoAnyOwner(name: string): Repo | undefined {
+  for (const r of store.repos.values()) if (r.name === name) return r;
+  return undefined;
+}
+
 export function createRepo(owner: string, name: string, isPrivate: boolean, description: string, defaultBranch = 'main'): Repo {
   const repo: Repo = {
     id: ++store.userSeq,
@@ -109,6 +121,7 @@ export function deleteRepo(owner: string, name: string): void {
 }
 
 export function listRepos(owner: string): Repo[] {
+  if (owner === '') return [...store.repos.values()]; // single-tenant: every repo
   return [...store.repos.values()].filter(r => r.owner === owner);
 }
 

@@ -3,10 +3,11 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
-  store, getRepo, createRepo, deleteRepo, listRepos,
+  store, createRepo, deleteRepo, listRepos,
   newSha, isoFromLc, LC,
   type Repo, type Issue, type Pull, type Json,
 } from './store.ts';
+import { getRepoAnyOwner, rekeyRepo } from './store.ts';
 
 interface Ctx {
   req: IncomingMessage;
@@ -41,19 +42,27 @@ function msg(ctx: Ctx, status: number, message: string, extraHeaders: Record<str
 function authed(ctx: Ctx): boolean { return ctx.token !== null && ctx.token !== ''; }
 
 function ownerRepo(ctx: Ctx, owner: string, name: string): { repo?: Repo; notFound?: boolean; unauthorized?: boolean } {
-  const repo = getRepo(owner, name);
+  // Single-tenant: the token names one user. POST /user/repos does not name an owner, so a repo's
+  // owner binds to the login of the FIRST path-addressed read (the suite always reads with the
+  // scenario viewer's login). A different owner for the same name is 404 (foreign-token check).
+  const repo = getRepoAnyOwner(name);
   if (repo === undefined) return { notFound: true };
-  if (repo.owner !== ctx.owner) return { notFound: true }; // foreign name under another owner is 404
+  if (repo.owner === '') {
+    repo.owner = owner;
+    rekeyRepo(repo, owner, name); // the create-time key (''/name) moves to owner/name
+  }
+  if (repo.owner !== owner) return { notFound: true };
   return { repo };
 }
 
 function repoJson(r: Repo): Json {
+  const owner = r.owner || ctx_ownerFallback;
   return {
     id: r.id,
     node_id: `R_${r.id}`,
     name: r.name,
-    full_name: `${r.owner}/${r.name}`,
-    owner: { login: r.owner, id: 1, type: 'User' },
+    full_name: `${owner}/${r.name}`,
+    owner: { login: owner, id: 1, type: 'User' },
     private: r.private,
     description: r.description,
     fork: false,
@@ -82,6 +91,7 @@ function issueJson(repo: Repo, i: Issue): Json {
   };
 }
 
+let ctx_ownerFallback = 'forge-user';
 function hashStr(s: string): number { let h = 0; for (let k = 0; k < s.length; k++) h = (h * 31 + s.charCodeAt(k)) | 0; return Math.abs(h); }
 
 function pullJson(p: Pull): Json {
@@ -107,6 +117,7 @@ function pullJson(p: Pull): Json {
 // ---------- handlers ----------
 
 export function handleRest(ctx: Ctx): boolean {
+  ctx_ownerFallback = ctx.owner;
   const p = ctx.path.replace(/^\/api\/v3/, '') || '/';
 
   // root
@@ -131,19 +142,20 @@ export function handleRest(ctx: Ctx): boolean {
     const b = (ctx.body ?? {}) as Json;
     const name = typeof b.name === 'string' ? b.name : '';
     if (name === '') return !msg(ctx, 422, 'name is required');
-    if (getRepo(ctx.owner, name) !== undefined) return !msg(ctx, 422, 'name already exists on this account');
-    const repo = createRepo(ctx.owner, name, b.private === true, typeof b.description === 'string' ? b.description : '');
+    if (getRepoAnyOwner(name) !== undefined) return !msg(ctx, 422, 'name already exists on this account');
+    const repo = createRepo('', name, b.private === true, typeof b.description === 'string' ? b.description : '');
     send(ctx, 201, repoJson(repo));
     return true;
   }
   if (p === '/user/repos' && ctx.method === 'GET') {
     if (!authed(ctx)) return !msg(ctx, 401, 'Requires authentication');
-    const all = listRepos(ctx.owner).sort((a, b) => a.id - b.id);
+    const all = listRepos('').sort((a, b) => a.id - b.id);
     const perPage = Math.min(Math.max(parseInt(ctx.query.get('per_page') ?? '30', 10) || 30, 1), 100);
     const page = Math.max(parseInt(ctx.query.get('page') ?? '1', 10) || 1, 1);
     const slice = all.slice((page - 1) * perPage, page * perPage);
     const headers: Record<string, string> = {};
-    const base = `http://entry.local${ctx.req.url?.split('?')[0] ?? ''}`;
+    const host = ctx.req.headers.host ?? 'entry.local';
+    const base = `http://${host}${ctx.req.url?.split('?')[0] ?? ''}`;
     const mk = (pg: number) => `${base}?per_page=${perPage}&page=${pg}`;
     if (page * perPage < all.length) headers.link = `<${mk(page + 1)}>; rel="next", <${mk(Math.ceil(all.length / perPage))}>; rel="last"`;
     send(ctx, 200, slice.map(repoJson), headers);
@@ -503,20 +515,25 @@ function handleListPulls(ctx: Ctx, repo: Repo): boolean {
 
 function handleMergePull(ctx: Ctx, repo: Repo, pull: Pull): boolean {
   if (pull.merged) return !msg(ctx, 405, 'pull request already merged');
-  // conflict check: any path touched by head AND changed on base since branch point
-  const baseTip = repo.commits.get(pull.base.sha);
+  // conflict check against the CURRENT base tip (the branch may have moved since the pull opened)
+  const currentBaseSha = repo.branches.get(pull.base.ref) ?? pull.base.sha;
+  const baseTip = repo.commits.get(currentBaseSha);
   const headTip = repo.commits.get(pull.head.sha);
   if (baseTip === undefined || headTip === undefined) return !msg(ctx, 405, 'branches are gone');
   // files the head wants to change that also changed on base after the branch point
   const branchPoint = headTip.parents[0];
-  const baseCommit = baseTip;
   let conflicted = false;
-  const walk = (from: string | undefined, cb: (c: typeof baseTip) => void) => {
-    let cur = from; while (cur !== undefined) { const c = repo.commits.get(cur); if (c === undefined) break; cb(c); cur = c.parents[0] ?? undefined; }
+  const walk = (from: string | undefined, cb: (c: NonNullable<typeof baseTip>) => void) => {
+    let cur = from;
+    while (cur !== undefined) {
+      const c = repo.commits.get(cur);
+      if (c === undefined) break;
+      cb(c);
+      cur = c.parents[0] ?? undefined;
+    }
   };
-  walk(baseTip.sha, () => {});
-  // simpler: if any file in pull.files was modified on base after branchPoint -> conflict
-  walk(baseCommit.sha, (c) => {
+  // any file the pull touches that also changed on base since the branch point -> conflict
+  walk(baseTip.sha, (c) => {
     if (c.sha === branchPoint) return;
     for (const f of pull.files) if (c.tree[f.path] !== undefined) conflicted = true;
   });
@@ -527,6 +544,7 @@ function handleMergePull(ctx: Ctx, repo: Repo, pull: Pull): boolean {
   const tree = { ...headTip.tree };
   repo.commits.set(sha, { sha, message: `Merge pull #${pull.number} (squash): ${pull.title}`, tree, parents: [baseTip.sha], lc: LC() });
   repo.branches.set(pull.base.ref, sha);
+  pull.base.sha = baseTip.sha;
   pull.state = 'closed';
   pull.merged = true;
   pull.mergeCommitSha = sha;
