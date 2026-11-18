@@ -48,7 +48,7 @@ function readBody(req: IncomingMessage, limit = 64 * 1024 * 1024): Promise<Buffe
 
 /** Build the server. It binds nothing until the caller listens; the entry listens on an ephemeral port. */
 export function createApp(): Server {
-  return createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const path = pathOf(req);
     const method = (req.method ?? 'GET').toUpperCase();
     const url = new URL(req.url ?? '/', 'http://entry');
@@ -147,4 +147,11 @@ export function createApp(): Server {
       sendJson(res, 500, { message: err instanceof Error ? err.message : 'internal error' });
     }
   });
+  // latency tuning: keep-alive connections stay alive for the suite's sequential workloads, and
+  // Nagle off so small responses leave immediately (matters most on the gVisor sandbox's network)
+  server.keepAliveTimeout = 65_000;
+  server.headersTimeout = 66_000;
+  server.requestTimeout = 300_000;
+  server.on('connection', (socket) => { socket.setNoDelay(true); });
+  return server;
 }
