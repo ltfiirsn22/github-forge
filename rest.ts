@@ -92,7 +92,9 @@ function issueJson(repo: Repo, i: Issue): Json {
   };
 }
 
-let ctx_ownerFallback = 'forge-user';
+export let ctx_ownerFallback = 'forge-user';
+export function currentViewer(): string { return ctx_ownerFallback; }
+export function setViewer(login: string): void { if (login !== '') ctx_ownerFallback = login; }
 function hashStr(s: string): number { let h = 0; for (let k = 0; k < s.length; k++) h = (h * 31 + s.charCodeAt(k)) | 0; return Math.abs(h); }
 
 function pullJson(p: Pull): Json {

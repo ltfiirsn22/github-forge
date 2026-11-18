@@ -7,6 +7,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { handleRest } from './rest.ts';
 import { handleGit } from './gitd.ts';
+import { handleGraphQL } from './graphql.ts';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 
@@ -75,6 +76,20 @@ export function createApp(): Server {
         return;
       }
 
+      // GraphQL v4: POST /api/graphql
+      if (path === '/api/graphql' && method === 'POST') {
+        const raw = await readBody(req);
+        let gqlBody: unknown = null;
+        if (raw.length > 0) {
+          try { gqlBody = JSON.parse(raw.toString('utf8')) as unknown; }
+          catch { sendJson(res, 400, { message: 'Problems parsing JSON' }); return; }
+        }
+        const auth = req.headers.authorization ?? '';
+        const token = auth.startsWith('Bearer ') ? auth.slice(7) : (auth.startsWith('token ') ? auth.slice(6) : null);
+        handleGraphQL({ req, res, token, body: gqlBody });
+        return;
+      }
+
       // REST v3: everything under /api/v3 goes to rest.ts.
       if (path === '/api/v3' || path.startsWith('/api/v3/')) {
         let body: unknown = null;
@@ -90,7 +105,11 @@ export function createApp(): Server {
         }
         const auth = req.headers.authorization ?? '';
         const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : null;
-        handleRest({ req, res, method, path, url: req.url ?? '/', query: url.searchParams, token, owner: VIEWER, body });
+        // ctx.owner = the login the path addresses (/repos/{owner}/...) so the forge binds the
+        // scenario viewer from real requests; non-path-addressed calls keep the constant viewer.
+        const restPath = path.replace(/^\/api\/v3/, '');
+        const ownerSeg = /^\/repos\/([^/]+)\//.exec(restPath);
+        handleRest({ req, res, method, path, url: req.url ?? '/', query: url.searchParams, token, owner: ownerSeg ? decodeURIComponent(ownerSeg[1]) : VIEWER, body });
         return;
       }
 
