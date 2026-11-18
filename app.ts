@@ -6,6 +6,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { handleRest } from './rest.ts';
+import { handleGit } from './gitd.ts';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 
@@ -54,6 +55,23 @@ export function createApp(): Server {
       // The env's boot check calls this twice: 200 {"ok":true}. No auth.
       if (method === 'GET' && path === '/healthz') {
         sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      // Git smart HTTP: /{owner}/{repo}.git/info/refs, /git-upload-pack, /git-receive-pack
+      const gitMatch = /^\/([^/]+)\/([^/]+)\.git(\/|$)/.exec(path);
+      if (gitMatch !== null) {
+        const raw = await readBody(req);
+        handleGit({
+          owner: decodeURIComponent(gitMatch[1]),
+          repoName: decodeURIComponent(gitMatch[2]),
+          method,
+          path,
+          query: url.searchParams,
+          protocolV2: (req.headers['git-protocol'] ?? '').includes('version=2'),
+          body: raw,
+          res,
+        });
         return;
       }
 

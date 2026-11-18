@@ -8,6 +8,7 @@ import {
   type Repo, type Issue, type Pull, type Json,
 } from './store.ts';
 import { getRepoAnyOwner, rekeyRepo } from './store.ts';
+import { honestBlob, honestCommit, registerBlobStore } from './gitd.ts';
 
 interface Ctx {
   req: IncomingMessage;
@@ -309,7 +310,8 @@ export function handleRest(ctx: Ctx): boolean {
 // ---------- contents ----------
 
 function blobId(repo: Repo, path: string, content: string): string {
-  return newSha(`${repo.owner}/${repo.name}:${path}:${content}`);
+  void path;
+  return honestBlob(repo, content);
 }
 
 function findBranch(repo: Repo, wanted: string | null): { name: string; sha: string } | null {
@@ -325,8 +327,7 @@ function commitFile(repo: Repo, branch: string, baseSha: string | null, path: st
   const base = baseSha !== null ? repo.commits.get(baseSha) : undefined;
   const tree: Record<string, string> = { ...(base?.tree ?? {}) };
   tree[path] = contentSha;
-  const sha = newSha(`${path}:${content}:${message}:${Object.keys(tree).length}`);
-  repo.commits.set(sha, { sha, message, tree, parents: baseSha !== null ? [baseSha] : [], lc: LC() });
+  const sha = honestCommit(repo, tree, baseSha !== null ? [baseSha] : [], message);
   repo.branches.set(branch, sha);
   return { commitSha: sha, contentSha };
 }
@@ -343,15 +344,12 @@ function handlePutContent(ctx: Ctx, repo: Repo, path: string): boolean {
   const existingPath = branchInfo.sha === '' ? null : repo.commits.get(branchInfo.sha)?.tree[path] ?? null;
 
   if (typeof b.sha === 'string' && b.sha !== '') {
-    // update: sha must match current blob sha
-    const currentSha = blobId(repo, path, decoded) === b.sha ? blobId(repo, path, decoded) : b.sha;
-    if (existingPath === null) return !msg(ctx, 409, `${path} does not exist`);
-    const commit = repo.commits.get(branchInfo.sha);
-    const curBlob = commit?.tree[path];
-    // The sha in the request refers to the file's current blob sha; accept when it matches the tree's,
-    // or when it matches the id the client last received (we hand back blobId(content)).
-    if (curBlob === undefined) return !msg(ctx, 409, `${path} does not exist`);
-    if (b.sha !== curBlob && b.sha !== blobId(repo, path, decoded)) return !msg(ctx, 409, `${path} sha does not match`);
+  // update: sha must match the CURRENT blob sha in the tree (stale shas are 409)
+  if (existingPath === null) return !msg(ctx, 409, `${path} does not exist`);
+  const commit = repo.commits.get(branchInfo.sha);
+  const curBlob = commit?.tree[path];
+  if (curBlob === undefined) return !msg(ctx, 409, `${path} does not exist`);
+  if (b.sha !== curBlob) return !msg(ctx, 409, `${path} sha does not match`);
     const res = commitFile(repo, branch, branchInfo.sha, path, decoded, message);
     return !send(ctx, 200, {
       content: { sha: res.contentSha, encoding: 'base64', content: Buffer.from(decoded, 'utf8').toString('base64'), name: path.split('/').pop(), path, size: Buffer.byteLength(decoded) },
@@ -421,8 +419,7 @@ function handleDeleteContent(ctx: Ctx, repo: Repo, path: string): boolean {
   if (blobSha === undefined) return !msg(ctx, 404, 'Not Found');
   const tree: Record<string, string> = { ...(commit?.tree ?? {}) };
   delete tree[path];
-  const sha = newSha(`del:${path}:${Date.now() & 0}`);
-  repo.commits.set(sha, { sha, message: typeof b.message === 'string' ? b.message : 'delete', tree, parents: tip !== undefined ? [tip] : [], lc: LC() });
+  const sha = honestCommit(repo, tree, tip !== undefined ? [tip] : [], typeof b.message === 'string' ? b.message : 'delete');
   repo.branches.set(branch, sha);
   return !send(ctx, 200, { commit: { sha, message: typeof b.message === 'string' ? b.message : 'delete' } });
 }
@@ -431,7 +428,12 @@ function handleDeleteContent(ctx: Ctx, repo: Repo, path: string): boolean {
 const blobMaps = new WeakMap<Repo, Map<string, string>>();
 function repoBlobs(repo: Repo): Map<string, string> {
   let m = blobMaps.get(repo);
-  if (m === undefined) { m = new Map(); blobMaps.set(repo, m); }
+  if (m === undefined) {
+    m = new Map();
+    blobMaps.set(repo, m);
+    // share this map with the git transport layer (single source of truth for blob bytes)
+    registerBlobStore(repo, { get: (k: string) => m!.get(k), set: (k: string, v: string) => { m!.set(k, v); } });
+  }
   return m;
 }
 
@@ -540,9 +542,7 @@ function handleMergePull(ctx: Ctx, repo: Repo, pull: Pull): boolean {
   if (conflicted) return !msg(ctx, 405, 'merge conflict');
 
   // squash merge: new commit on base with head's tree
-  const sha = newSha(`merge:${pull.number}:${headTip.sha}`);
-  const tree = { ...headTip.tree };
-  repo.commits.set(sha, { sha, message: `Merge pull #${pull.number} (squash): ${pull.title}`, tree, parents: [baseTip.sha], lc: LC() });
+  const sha = honestCommit(repo, { ...headTip.tree }, [baseTip.sha], `Merge pull #${pull.number} (squash): ${pull.title}`);
   repo.branches.set(pull.base.ref, sha);
   pull.base.sha = baseTip.sha;
   pull.state = 'closed';

@@ -88,96 +88,75 @@ interface PackEntry {
   baseOfsRel?: number; // type 6: negative offset from this entry's header
 }
 
-/** Sanity-check a would-be pack entry header at `off`: plausible type + declared size. */
-function headerLooksSane(pack: Buffer, off: number): boolean {
-  if (off >= pack.length) return false;
-  const byte = pack[off];
-  const type = (byte >> 4) & 7;
-  if (type < 1 || type > 7) return false;
-  let size = byte & 0x0f;
-  let shift = 4;
-  let cur = off;
-  let b = byte;
-  while (b & 0x80) {
-    if (++cur >= pack.length) return true; // end of buffer: can't falsify further
-    b = pack[cur];
-    size |= (b & 0x7f) << shift;
-    shift += 7;
-  }
-  if (size > pack.length) return false; // declared data bigger than the whole pack: bogus
-  return true;
-}
-
-/** Walk a pack's entry table (offsets + inflated sizes), tolerant of zlib end-of-stream ambiguity. */
+/**
+ * Walk a pack's entry table. zlib's stream end is ambiguous by +-1 byte in prefix-inflate probing
+ * (output can complete before the final input byte), so each entry may have two candidate consumed
+ * lengths; a candidate is correct only if the WHOLE remaining table then parses and lands exactly at
+ * the pack trailer. Backtracking over that tiny candidate set is deterministic and cheap.
+ */
 function packEntries(pack: Buffer): PackEntry[] {
   if (pack.length < 12 || pack.toString('ascii', 0, 4) !== 'PACK') throw new Error('not a packfile');
   const version = pack.readUInt32BE(4);
   if (version !== 2 && version !== 3) throw new Error(`bad pack version ${version}`);
   const count = pack.readUInt32BE(8);
   const entries: PackEntry[] = [];
-  let off = 12;
-  for (let n = 0; n < count; n++) {
+
+  const candidatesAt = (off: number, declared: number): Array<{ consumed: number; data: Buffer }> => {
+    // out.length reaches `declared` at the true stream end E and STAYS there for every larger prefix
+    // (zlib ignores trailing bytes), so the candidate set is {E} or {E, E+1} — collect at most two.
+    const found: Array<{ consumed: number; data: Buffer }> = [];
+    for (let k = 2; k <= pack.length - off && found.length < 2; k++) {
+      try {
+        const out = inflateSync(pack.subarray(off, off + k));
+        if (out.length === declared) found.push({ consumed: k, data: out });
+        if (out.length > declared) break;
+      } catch { /* incomplete prefix: keep scanning */ }
+    }
+    return found;
+  };
+
+  const walk = (off: number, remaining: number): PackEntry[] | null => {
+    if (remaining === 0) return off === pack.length - 20 ? [] : null;
+    if (off >= pack.length - 20 || remaining < 0) return null;
     const start = off;
     let byte = pack[off++];
     const type = (byte >> 4) & 7;
     let size = byte & 0x0f;
     let shift = 4;
     while (byte & 0x80) {
+      if (off >= pack.length) return null;
       byte = pack[off++];
       size |= (byte & 0x7f) << shift;
       shift += 7;
     }
     const entry: PackEntry = { type, offset: start, dataOffset: off, size };
     if (type === 6) {
-      // ofs-delta: offset varint (PLAINTEXT, before the zlib stream) with the +bias encoding
+      if (off >= pack.length) return null;
       byte = pack[off++];
       let value = byte & 0x7f;
       while (byte & 0x80) {
+        if (off >= pack.length) return null;
         byte = pack[off++];
         value = ((value + 1) << 7) | (byte & 0x7f);
       }
       entry.baseOfsRel = value;
     } else if (type === 7) {
+      if (off + 20 > pack.length) return null;
       entry.baseRef = pack.subarray(off, off + 20).toString('hex');
       off += 20;
     }
     entry.dataOffset = off; // after any ofs/ref header bytes — the zlib stream starts here
-    // Find the stream end: inflate prefixes until output reaches the declared size. Some zlib builds
-    // report success one byte LATE (they need a trailing byte to confirm end-of-stream), so when the
-    // next header parses insane, backtrack one byte.
-    let consumed = -1;
-    let data: Buffer | null = null;
-    for (let k = 2; k <= pack.length - off; k++) {
-      try {
-        const out = inflateSync(pack.subarray(off, off + k));
-        if (out.length === size) { consumed = k; data = out; break; }
-        if (out.length > size) throw new Error(`inflated ${out.length} > declared ${size}`);
-      } catch (err) {
-        if (err instanceof Error && err.message.startsWith('inflated')) throw err;
-        continue;
-      }
+    for (const cand of candidatesAt(off, size)) {
+      entry.size = cand.data.length;
+      const rest = walk(off + cand.consumed, remaining - 1);
+      if (rest !== null) return [entry, ...rest];
     }
-    if (consumed === -1) {
-      throw new Error(`truncated zlib stream in pack entry ${n} (dataStart ${off}, type ${type}, declaredSize ${size}, remaining ${pack.length - off})`);
-    }
-    // zlib quirk: some builds report success one byte PAST the true stream end (they need a trailing
-    // byte to confirm end-of-stream). When the next header parses insane, retry one byte shorter with
-    // Z_SYNC_FLUSH (which tolerates the missing confirming byte) — if it still yields the declared
-    // size and the header there looks sane, that one byte belonged to the next entry.
-    if (consumed >= 3 && !headerLooksSane(pack, off + consumed)) {
-      try {
-        const shorter = inflateSync(pack.subarray(off, off + consumed - 1), { finishFlush: zlibConstants.Z_SYNC_FLUSH });
-        if (shorter.length === size && headerLooksSane(pack, off + consumed - 1)) {
-          consumed -= 1;
-          data = shorter;
-        }
-      } catch { /* keep original */ }
-    }
-    entry.size = data!.length;
-    off += consumed;
-    entries.push(entry);
-  }
-  return entries;
+    return null;
+  };
+
+  const solved = walk(12, count);
+  if (solved === null) throw new Error(`pack entry table does not resolve to ${count} objects ending at the trailer`);
+  return solved;
 }
 
 /** Read a pack's object table without resolving deltas (validation helper). */
