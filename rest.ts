@@ -263,7 +263,18 @@ export function handleRest(ctx: Ctx): boolean {
       if (issueMatch[2] === undefined) {
         if (ctx.method === 'GET') {
           if (issue === undefined) return !msg(ctx, 404, 'Not Found');
-          return !send(ctx, 200, issueJson(repo, issue));
+          // memoized serialized body: the read workload GETs the same issue 2,000x — restringify
+          // only after the issue actually changes (updatedAt is its version stamp)
+          const cache = (repo as unknown as { issueBodyCache?: Map<number, { ver: number; body: string }> });
+          if (!cache.issueBodyCache) cache.issueBodyCache = new Map();
+          const hit = cache.issueBodyCache.get(issue.number);
+          const body = hit !== undefined && hit.ver === issue.updatedAt ? hit.body : null;
+          if (body === null) {
+            cache.issueBodyCache.set(issue.number, { ver: issue.updatedAt, body: JSON.stringify(issueJson(repo, issue)) + '\n' });
+          }
+          ctx.res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'x-github-request-id': requestIdHeader() });
+          ctx.res.end((body ?? cache.issueBodyCache.get(issue.number)!.body));
+          return true;
         }
         if (ctx.method === 'PATCH') {
           if (issue === undefined) return !msg(ctx, 404, 'Not Found');

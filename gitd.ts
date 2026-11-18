@@ -213,6 +213,12 @@ function walkCommits(repo: Repo, tip: string, shallow: Set<string>): string[] {
 // ---------- advertisement ----------
 
 function refList(repo: Repo): Array<{ name: string; oid: string; peeled?: string; symref?: string }> {
+  // cached per ref-generation; the generation bumps wherever packCache clears (every ref change)
+  const gen = (repo as unknown as { refGen?: number; refGenCache?: Map<number, Array<{ name: string; oid: string; peeled?: string; symref?: string }>> });
+  if (gen.refGen === undefined) gen.refGen = 0;
+  if (gen.refGenCache === undefined) gen.refGenCache = new Map();
+  const cached = gen.refGenCache.get(gen.refGen);
+  if (cached !== undefined) return cached;
   const refs: Array<{ name: string; oid: string; peeled?: string; symref?: string }> = [];
   const headTarget = repo.defaultBranch;
   const headSha = repo.branches.get(headTarget) ?? null;
@@ -223,6 +229,7 @@ function refList(repo: Repo): Array<{ name: string; oid: string; peeled?: string
     const peeled = peel(repo, sha);
     refs.push({ name: `refs/tags/${n}`, oid: sha, ...(peeled ? { peeled } : {}) });
   }
+  if (gen.refGenCache.size < 16) gen.refGenCache.set(gen.refGen, refs);
   return refs;
 }
 
@@ -335,8 +342,10 @@ function collectObjects(repo: Repo, tips: string[], haves: Set<string>, shallow:
     const tagObj = isTag ? tagObjects(repo).get(tip) : undefined;
     if (tagObj !== undefined) deliveredTags.push(tagObj);
     if (!repo.commits.has(tip) && tagObj === undefined) continue;
-    // walk ancestry, bounded by the requested depth when given
-    const levels = repo.commits.has(tip) ? levelsFromTip(repo, tip, new Set()) : [[tagsOf(repo).get(tip)!, 1] as [string, number]];
+    // walk ancestry, bounded by the requested depth when given (levelsFromTip stops at maxDepth)
+    const levels = repo.commits.has(tip)
+      ? levelsFromTip(repo, tip, new Set(), deepen ?? Number.MAX_SAFE_INTEGER)
+      : [[tagsOf(repo).get(tip)!, 1] as [string, number]];
     const maxDepth = deepen != null ? deepen : Number.MAX_SAFE_INTEGER;
     for (const [sha, depth] of levels) {
       if (depth > maxDepth) continue;
@@ -357,12 +366,12 @@ function collectObjects(repo: Repo, tips: string[], haves: Set<string>, shallow:
   return { objs, shallow: shallowLines, unshallow: unshallowLines };
 }
 
-function levelsFromTip(repo: Repo, tip: string, haves: Set<string>): Array<[string, number]> {
+function levelsFromTip(repo: Repo, tip: string, haves: Set<string>, maxDepth = 64): Array<[string, number]> {
   const out: Array<[string, number]> = [];
   const visited = new Set<string>();
   let frontier = [tip];
   let depth = 1;
-  while (frontier.length > 0 && depth <= 64) {
+  while (frontier.length > 0 && depth <= maxDepth) {
     const next: string[] = [];
     for (const sha of frontier) {
       if (visited.has(sha)) continue;
@@ -397,7 +406,9 @@ function handleFetchV2(repo: Repo, args: string[]): Buffer {
   const shallowSet = new Set(shallow);
   const { objs, shallow: shallowLines } = collectObjects(repo, wants, haveSet, shallowSet, deepen);
 
-  // pack cache: the clone workload repeats the identical fetch; key on the request signature
+  // pack cache: the clone workload repeats the identical fetch. Node runs the request handler to
+  // completion on one thread, so a synchronous build can never be raced: the first of 50 identical
+  // concurrent fetches builds and caches, the rest hit the cache. Key on the request signature.
   const cache = (repo as unknown as { packCache?: Map<string, Buffer> });
   if (!cache.packCache) cache.packCache = new Map();
   const cacheKey = `${[...wants].sort().join(',')}|${[...haveSet].sort().join(',')}|${deepen ?? '-'}|${[...objs.keys()].sort().join(',')}`;
@@ -540,9 +551,15 @@ function handleReceivePack(repo: Repo, body: Buffer, capReq: string): Buffer {
         // delete
         if (cmd.ref.startsWith('refs/heads/')) {
           repo.branches.delete(cmd.ref.slice('refs/heads/'.length));
+          const staleD = repo as unknown as { packCache?: Map<string, Buffer>; refGen?: number };
+          staleD.packCache?.clear();
+          staleD.refGen = (staleD.refGen ?? 0) + 1;
           results.push({ ref: cmd.ref, ok: true, reason: '' });
         } else if (cmd.ref.startsWith('refs/tags/')) {
           tagsOf(repo).delete(cmd.ref.slice('refs/tags/'.length));
+          const staleT = repo as unknown as { packCache?: Map<string, Buffer>; refGen?: number };
+          staleT.packCache?.clear();
+          staleT.refGen = (staleT.refGen ?? 0) + 1;
           results.push({ ref: cmd.ref, ok: true, reason: '' });
         } else if (cmd.ref === 'HEAD') {
           results.push({ ref: cmd.ref, ok: false, reason: 'refusing to delete the current branch' });
@@ -571,6 +588,10 @@ function handleReceivePack(repo: Repo, body: Buffer, capReq: string): Buffer {
       if (cmd.ref.startsWith('refs/heads/')) repo.branches.set(cmd.ref.slice('refs/heads/'.length), cmd.newOid);
       else if (cmd.ref.startsWith('refs/tags/')) tagsOf(repo).set(cmd.ref.slice('refs/tags/'.length), cmd.newOid);
       else if (cmd.ref === 'HEAD') repo.branches.set(repo.defaultBranch, cmd.newOid);
+      // refs changed: the fetch pack cache and the ref list cache for this repo are stale
+      const stale = repo as unknown as { packCache?: Map<string, Buffer>; refGen?: number; refGenCache?: Map<number, unknown> };
+      stale.packCache?.clear();
+      stale.refGen = (stale.refGen ?? 0) + 1;
       results.push({ ref: cmd.ref, ok: true, reason: '' });
     }
   } else {
@@ -713,7 +734,10 @@ export function handleGit(ctx: GitCtx): boolean {
     }
     if (ctx.path.endsWith('/git-receive-pack')) {
       if (repo === undefined) { sendGit(404, 'text/plain; charset=utf-8', 'Not Found'); return true; }
-      sendGit(200, 'application/x-git-receive-pack-result', handleReceivePack(repo, ctx.body, ''));
+      const tRp0 = performance.now();
+      const rp = handleReceivePack(repo, ctx.body, '');
+      if (process.env.FORGE_DEBUG) console.error(`DBG receive-pack server-side ${ (performance.now() - tRp0).toFixed(2) }ms body=${ctx.body.length}B`);
+      sendGit(200, 'application/x-git-receive-pack-result', rp);
       return true;
     }
   }
