@@ -8,6 +8,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { handleRest } from './rest.ts';
 import { handleGit } from './gitd.ts';
 import { handleGraphQL } from './graphql.ts';
+import { handleMcp, handleMcpParseError } from './mcp.ts';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 
@@ -87,6 +88,26 @@ export function createApp(): Server {
         const auth = req.headers.authorization ?? '';
         const token = auth.startsWith('Bearer ') ? auth.slice(7) : (auth.startsWith('token ') ? auth.slice(6) : null);
         handleGraphQL({ req, res, token, body: gqlBody });
+        return;
+      }
+
+      // MCP: POST /mcp (Streamable HTTP, JSON-RPC 2.0)
+      if (path === '/mcp' && method === 'POST') {
+        const raw = await readBody(req);
+        const auth = req.headers.authorization ?? '';
+        const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : (auth.startsWith('token ') ? auth.slice(6).trim() : null);
+        let mcpBody: unknown = null;
+        let malformed = false;
+        if (raw.length > 0) {
+          try { mcpBody = JSON.parse(raw.toString('utf8')) as unknown; }
+          catch { malformed = true; }
+        }
+        if (token === null || token === '') {
+          sendJson(res, 401, { message: 'Bad credentials' });
+          return;
+        }
+        if (malformed) { handleMcpParseError(res); return; }
+        handleMcp({ req, res, token, body: mcpBody });
         return;
       }
 
