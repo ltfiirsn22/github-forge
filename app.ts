@@ -63,7 +63,8 @@ export function createApp(): Server {
       // Git smart HTTP: /{owner}/{repo}.git/info/refs, /git-upload-pack, /git-receive-pack
       const gitMatch = /^\/([^/]+)\/([^/]+)\.git(\/|$)/.exec(path);
       if (gitMatch !== null) {
-        const raw = await readBody(req);
+        // GET (advertisement) has no body: skip the readBody await on the push workload's hot path
+        const raw = method === 'GET' ? Buffer.alloc(0) : await readBody(req);
         handleGit({
           owner: decodeURIComponent(gitMatch[1]),
           repoName: decodeURIComponent(gitMatch[2]),
@@ -114,14 +115,20 @@ export function createApp(): Server {
       // REST v3: everything under /api/v3 goes to rest.ts.
       if (path === '/api/v3' || path.startsWith('/api/v3/')) {
         let body: unknown = null;
-        const raw = await readBody(req);
-        if (raw.length > 0) {
-          const text = raw.toString('utf8');
-          try {
-            body = JSON.parse(text) as unknown;
-          } catch {
-            sendJson(res, 400, { message: 'Problems parsing JSON' });
-            return;
+        // bodyless methods skip the drain: the readBody await costs measurable time on the read
+        // workload's 2,000 sequential GETs
+        if (method === 'GET' || method === 'HEAD' || method === 'DELETE') {
+          req.resume(); // drain whatever (nothing) the client sent, without awaiting listeners
+        } else {
+          const raw = await readBody(req);
+          if (raw.length > 0) {
+            const text = raw.toString('utf8');
+            try {
+              body = JSON.parse(text) as unknown;
+            } catch {
+              sendJson(res, 400, { message: 'Problems parsing JSON' });
+              return;
+            }
           }
         }
         const auth = req.headers.authorization ?? '';

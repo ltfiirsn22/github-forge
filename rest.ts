@@ -23,7 +23,8 @@ interface Ctx {
 }
 
 function send(ctx: Ctx, status: number, body: unknown, extraHeaders: Record<string, string> = {}): void {
-  const text = JSON.stringify(body, null, 2) + '\n';
+  // compact JSON: the suite parses bodies; pretty-printing doubles the bytes on every response
+  const text = JSON.stringify(body) + '\n';
   ctx.res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'x-github-request-id': requestIdHeader(),

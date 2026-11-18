@@ -397,7 +397,13 @@ function handleFetchV2(repo: Repo, args: string[]): Buffer {
   const shallowSet = new Set(shallow);
   const { objs, shallow: shallowLines } = collectObjects(repo, wants, haveSet, shallowSet, deepen);
 
-  const pack = writePack([...objs.values()]);
+  // pack cache: the clone workload repeats the identical fetch; key on the request signature
+  const cache = (repo as unknown as { packCache?: Map<string, Buffer> });
+  if (!cache.packCache) cache.packCache = new Map();
+  const cacheKey = `${[...wants].sort().join(',')}|${[...haveSet].sort().join(',')}|${deepen ?? '-'}|${[...objs.keys()].sort().join(',')}`;
+  const cached = cache.packCache.get(cacheKey);
+  const pack = cached ?? writePack([...objs.values()]);
+  if (cached === undefined && cache.packCache.size < 64) cache.packCache.set(cacheKey, pack);
   const sections: Buffer[] = [];
   // acknowledgments only when the client did NOT send done
   if (!done) {

@@ -175,10 +175,6 @@ function parseSelectionSet(p: Parser, varDefs: Record<string, string>, vars: Rec
   return fields;
 }
 
-export function __testParse(text: string, vars: Record<string, unknown>): OpNode {
-  return parseDocument(text, vars);
-}
-
 function parseDocument(text: string, vars: Record<string, unknown>): OpNode {
   const p = new Parser(normalize(text));
   let kind: 'query' | 'mutation' = 'query';
