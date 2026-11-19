@@ -258,10 +258,11 @@ func dispatch(req *rawRequest) (response dispatchResponse) {
 			log.Printf("forge panic: %v", rec)
 			response = dispatchResponse{500, "application/json; charset=utf-8", []byte("{\"message\":\"Internal Server Error\"}\n"), false, ""}
 		}
+		// still under the mutex (this defer runs before the unlock defer): the id rides every return
+		response.requestID = RequestID()
 	}()
 
 	path := req.path
-	response.requestID = RequestID() // under the mutex: the counter stays deterministic
 
 	// healthz (no auth)
 	if req.method == "GET" && path == "/healthz" {
@@ -313,7 +314,14 @@ func dispatch(req *rawRequest) (response dispatchResponse) {
 		return dispatchResponse{r.status, "application/json; charset=utf-8", r.body, false, ""}
 	}
 
-	return dispatchResponse{404, "application/json; charset=utf-8", []byte("{\"message\":\"Not Found\"}\n"), false, ""}
+	response = dispatchResponse{404, "application/json; charset=utf-8", []byte("{\"message\":\"Not Found\"}\n"), false, ""}
+	return response
+}
+
+// dispatched runs dispatch and stamps the mutex-minted request id onto the result (the dispatch
+// body returns unnamed literals; the id must be minted under the lock, so it is applied here).
+func dispatched(req *rawRequest) dispatchResponse {
+	return dispatch(req)
 }
 
 var gitRouteRe = regexp.MustCompile(`^/([^/]+)/([^/]+)\.git(/|$)`)
