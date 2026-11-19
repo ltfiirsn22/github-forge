@@ -63,19 +63,19 @@ type PullFile struct {
 }
 
 type Pull struct {
-	Number        int
-	Title         string
-	Body          string
-	State         string // "open" | "closed"
-	Merged        bool
-	HeadRef       string
-	HeadSha       string
-	BaseRef       string
-	BaseSha       string
+	Number         int
+	Title          string
+	Body           string
+	State          string // "open" | "closed"
+	Merged         bool
+	HeadRef        string
+	HeadSha        string
+	BaseRef        string
+	BaseSha        string
 	MergeCommitSha string
-	MergedAt      *int64
-	CreatedAt     int64
-	Files         []PullFile
+	MergedAt       *int64
+	CreatedAt      int64
+	Files          []PullFile
 }
 
 type CommitNode struct {
@@ -94,31 +94,31 @@ type Repo struct {
 	Description   string
 	DefaultBranch string
 
-	Branches map[string]string // name -> commit sha
-	Commits  map[string]*CommitNode
+	Branches    map[string]string // name -> commit sha
+	Commits     map[string]*CommitNode
 	commitOrder []string // insertion order for deterministic iteration
-	Issues   map[int]*Issue
-	issueOrder []int
-	IssueSeq int
-	Labels   map[string]*Label
-	labelOrder []string
-	Pulls    map[int]*Pull
-	pullOrder  []int
-	PullSeq  int
-	CreatedAt int64
+	Issues      map[int]*Issue
+	issueOrder  []int
+	IssueSeq    int
+	Labels      map[string]*Label
+	labelOrder  []string
+	Pulls       map[int]*Pull
+	pullOrder   []int
+	PullSeq     int
+	CreatedAt   int64
 
 	// git-transport side state (mirrors the TS side-channel maps)
-	BlobStore   map[string]string // blob sha -> utf8 content
-	CommitRaws  map[string][]byte // pushed commit exact bytes
-	TreeRaws    map[string][]byte // pushed tree exact bytes
-	Tags        map[string]string // tag name -> oid
-	tagOrder    []string
-	TagObjects  map[string]*GitObj // annotated tag oid -> object
-	RefGen      int                // bumped on every ref change
-	refCacheGen int                // generation the RefListCache was built at
-	RefListCache []RefEntry
-	PackCache   map[string][]byte  // fetch answer cache, cleared on ref change
-	packKeys    []string
+	BlobStore      map[string]string // blob sha -> utf8 content
+	CommitRaws     map[string][]byte // pushed commit exact bytes
+	TreeRaws       map[string][]byte // pushed tree exact bytes
+	Tags           map[string]string // tag name -> oid
+	tagOrder       []string
+	TagObjects     map[string]*GitObj // annotated tag oid -> object
+	RefGen         int                // bumped on every ref change
+	refCacheGen    int                // generation the RefListCache was built at
+	RefListCache   []RefEntry
+	PackCache      map[string][]byte // fetch answer cache, cleared on ref change
+	packKeys       []string
 	IssueBodyCache map[int]issueBodyCacheEntry
 }
 
@@ -128,10 +128,10 @@ type issueBodyCacheEntry struct {
 }
 
 type Store struct {
-	Repos   map[string]*Repo // key: strings.ToLower(owner + "/" + name)
-	repoOrder []string       // insertion order
-	UserSeq int64
-	ShaSeq  int64
+	Repos     map[string]*Repo // key: strings.ToLower(owner + "/" + name)
+	repoOrder []string         // insertion order
+	UserSeq   int64
+	ShaSeq    int64
 }
 
 var store = &Store{Repos: make(map[string]*Repo)}
@@ -151,7 +151,7 @@ func GetRepoAnyOwner(name string) *Repo {
 // GetRepo looks a repo up by owner+name (owner may be "" for the create-time key).
 func GetRepo(owner, name string) *Repo { return store.Repos[repoKey(owner, name)] }
 
-// RekeyRepo moves a repo from its create-time key (''/name) to owner/name.
+// RekeyRepo moves a repo from its create-time key (”/name) to owner/name.
 func RekeyRepo(repo *Repo, owner, name string) {
 	delete(store.Repos, repoKey("", name))
 	store.Repos[repoKey(owner, name)] = repo
@@ -167,24 +167,24 @@ func RekeyRepo(repo *Repo, owner, name string) {
 
 func CreateRepo(owner, name string, isPrivate bool, description string) *Repo {
 	repo := &Repo{
-		ID:            store.UserSeq + 1,
-		Owner:         owner,
-		Name:          name,
-		Private:       isPrivate,
-		Description:   description,
-		DefaultBranch: "main",
-		Branches:      make(map[string]string),
-		Commits:       make(map[string]*CommitNode),
-		Issues:        make(map[int]*Issue),
-		Labels:        make(map[string]*Label),
-		Pulls:         make(map[int]*Pull),
-		CreatedAt:     LC(),
-		BlobStore:     make(map[string]string),
-		CommitRaws:    make(map[string][]byte),
-		TreeRaws:      make(map[string][]byte),
-		Tags:          make(map[string]string),
-		TagObjects:    make(map[string]*GitObj),
-		PackCache:     make(map[string][]byte),
+		ID:             store.UserSeq + 1,
+		Owner:          owner,
+		Name:           name,
+		Private:        isPrivate,
+		Description:    description,
+		DefaultBranch:  "main",
+		Branches:       make(map[string]string),
+		Commits:        make(map[string]*CommitNode),
+		Issues:         make(map[int]*Issue),
+		Labels:         make(map[string]*Label),
+		Pulls:          make(map[int]*Pull),
+		CreatedAt:      LC(),
+		BlobStore:      make(map[string]string),
+		CommitRaws:     make(map[string][]byte),
+		TreeRaws:       make(map[string][]byte),
+		Tags:           make(map[string]string),
+		TagObjects:     make(map[string]*GitObj),
+		PackCache:      make(map[string][]byte),
 		IssueBodyCache: make(map[int]issueBodyCacheEntry),
 	}
 	store.UserSeq++
@@ -207,7 +207,7 @@ func DeleteRepo(owner, name string) {
 	}
 }
 
-// ListRepos returns every repo sorted by id (owner '' means all, single-tenant).
+// ListRepos returns every repo sorted by id (owner ” means all, single-tenant).
 func ListRepos() []*Repo {
 	out := make([]*Repo, 0, len(store.repoOrder))
 	for _, k := range store.repoOrder {

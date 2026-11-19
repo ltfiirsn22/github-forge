@@ -12,7 +12,18 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"sync"
 )
+
+// zlib writer/reader pools: flate.NewWriter* allocates ~250KB of window+dictionaries per call,
+// which dominated GC time in the clone benchmark (Tahap 5.3: 65% of allocated bytes). Pools
+// recycle those windows across pack writes and entry inflates.
+var zlibWriterPool = sync.Pool{
+	New: func() any {
+		w, _ := zlib.NewWriterLevel(nil, 1)
+		return w
+	},
+}
 
 type ObjType string
 
@@ -187,21 +198,36 @@ func SerializeTree(entries []TreeEnt) []byte {
 // ---------- packfile ----------
 
 type packEntry struct {
-	typ       int
-	offset    int // header offset
+	typ        int
+	offset     int // header offset
 	dataOffset int // zlib stream start
-	size      int
-	baseRef   string // typ 7
-	baseOfsRel int   // typ 6
+	size       int
+	baseRef    string // typ 7
+	baseOfsRel int    // typ 6
 }
 
 // inflatePrefix inflates data[:k]; ok only when the zlib stream completes within it.
-func inflatePrefix(data []byte, k int) ([]byte, bool) {
-	zr, err := zlib.NewReader(bytes.NewReader(data[:k]))
-	if err != nil {
-		return nil, false
+// flate.NewReader's window allocation was 76% of clone-path allocated bytes (Tahap 5.3
+// memprofile), so readers are pooled and Reset between probes.
+var inflateReaderPool sync.Pool // of io.ReadCloser (zlib readers, Resettable)
+
+func inflatePrefix(data []byte, k int) (out []byte, ok bool) {
+	buf := bytes.NewReader(data[:k])
+	var rc io.ReadCloser
+	if cached, got := inflateReaderPool.Get().(io.ReadCloser); got && cached != nil {
+		rc = cached
+		if err := rc.(zlib.Resetter).Reset(buf, nil); err != nil {
+			return nil, false
+		}
+	} else {
+		r, err := zlib.NewReader(buf)
+		if err != nil {
+			return nil, false
+		}
+		rc = r
 	}
-	out, err := io.ReadAll(zr)
+	out, err := io.ReadAll(rc)
+	inflateReaderPool.Put(rc)
 	if err != nil {
 		return nil, false
 	}
@@ -358,6 +384,7 @@ func ReadPack(pack []byte, external func(oid string) *GitObj) (map[string]*GitOb
 		defer zr.Close()
 		return io.ReadAll(zr)
 	}
+	_ = inflateAt
 
 	var resolve func(idx, depth int) (int, []byte, error)
 	resolve = func(idx, depth int) (int, []byte, error) {
@@ -544,10 +571,11 @@ func WritePack(objects []*GitObj) []byte {
 		}
 		hdr = append(hdr, byte(first))
 		b.Write(hdr)
-		var zw *zlib.Writer
-		zw, _ = zlib.NewWriterLevel(&b, 1)
+		zw := zlibWriterPool.Get().(*zlib.Writer)
+		zw.Reset(&b)
 		zw.Write(obj.Data)
 		zw.Close()
+		zlibWriterPool.Put(zw)
 	}
 	body := b.Bytes()
 	sum := sha1.Sum(body)

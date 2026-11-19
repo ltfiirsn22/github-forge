@@ -2,22 +2,20 @@
 // The core prints "FORGE_LISTEN <port>" on stdout first thing; this shim reads it, then the
 // entry lifecycle (main.ts) registers that port with the trial env exactly as before.
 //
-// The binary is copied to a fresh temp dir and chmodded: web-UI uploads can lose the exec bit
-// and the repo mount may be read-only.
+// Exec order: straight from the repository first — a read-only bind mount still allows exec,
+// and the committed binary carries mode 755. Only on EACCES (a mount flagged noexec, or an
+// upload that lost the exec bit) do we copy to a fresh temp dir, chmod 755 and retry there;
+// the tmpfs copy only helps when the sandbox's /tmp is NOT flagged noexec.
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { chmod, copyFile, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-/** Launch the Go core; resolves once it prints FORGE_LISTEN <port>. */
-export async function launchGoCore(): Promise<{ child: ChildProcess; port: number }> {
-  const dir = await mkdtemp(join(tmpdir(), 'forge-'));
-  const binPath = join(dir, 'forge');
-  await copyFile(new URL('./go/forge', import.meta.url), binPath);
-  await chmod(binPath, 0o755);
-  const child = spawn(binPath, [], { stdio: ['ignore', 'pipe', 'inherit'], env: process.env });
-  const port = await new Promise<number>((resolve, reject) => {
+/** Resolve once the Go core printed FORGE_LISTEN <port>. */
+function readPort(child: ChildProcess): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
     let buffer = '';
     let settled = false;
     child.stdout!.on('data', (chunk: Buffer) => {
@@ -51,5 +49,25 @@ export async function launchGoCore(): Promise<{ child: ChildProcess; port: numbe
       }
     });
   });
+}
+
+/** Launch the Go core; resolves once it printed FORGE_LISTEN <port>. */
+export async function launchGoCore(): Promise<{ child: ChildProcess; port: number }> {
+  const repoBin = fileURLToPath(new URL('./go/forge', import.meta.url)); // spawn needs a path, not a URL
+  // 1) straight from the repository mount
+  try {
+    const child = spawn(repoBin, [], { stdio: ['ignore', 'pipe', 'inherit'], env: process.env });
+    const port = await readPort(child);
+    return { child, port };
+  } catch (err) {
+    if (!(err instanceof Error) || !err.message.includes('EACCES')) throw err;
+  }
+  // 2) EACCES: the mount is noexec or the bit was lost — copy out and chmod
+  const dir = await mkdtemp(join(tmpdir(), 'forge-'));
+  const binPath = join(dir, 'forge');
+  await copyFile(repoBin, binPath);
+  await chmod(binPath, 0o755);
+  const child = spawn(binPath, [], { stdio: ['ignore', 'pipe', 'inherit'], env: process.env });
+  const port = await readPort(child);
   return { child, port };
 }

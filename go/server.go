@@ -243,24 +243,29 @@ type dispatchResponse struct {
 	status      int
 	contentType string
 	body        []byte
-	gitBody     bool // git responses are raw bytes, no JSON newline
+	gitBody     bool   // git responses are raw bytes, no JSON newline
+	requestID   string // minted under the dispatch mutex (deterministic counter)
 }
 
-func dispatch(req *rawRequest) dispatchResponse {
-	// the global mutex holds for the whole dispatch: single-threaded state semantics.
+func dispatch(req *rawRequest) (response dispatchResponse) {
+	// the global mutex holds for the whole dispatch: single-threaded state semantics, so every
+	// counter it touches (the request id, the logical clock) stays deterministic. The id is
+	// minted HERE, under the lock — minting it later in writeResponse raced between goroutines.
 	dispatchMu.Lock()
 	defer dispatchMu.Unlock()
 	defer func() {
 		if rec := recover(); rec != nil {
 			log.Printf("forge panic: %v", rec)
+			response = dispatchResponse{500, "application/json; charset=utf-8", []byte("{\"message\":\"Internal Server Error\"}\n"), false, ""}
 		}
 	}()
 
 	path := req.path
+	response.requestID = RequestID() // under the mutex: the counter stays deterministic
 
 	// healthz (no auth)
 	if req.method == "GET" && path == "/healthz" {
-		return dispatchResponse{200, "application/json; charset=utf-8", []byte("{\"ok\":true}\n"), false}
+		return dispatchResponse{200, "application/json; charset=utf-8", []byte("{\"ok\":true}\n"), false, ""}
 	}
 
 	token := ""
@@ -276,13 +281,13 @@ func dispatch(req *rawRequest) dispatchResponse {
 		owner := urlUnescape(m[1])
 		name := urlUnescape(m[2])
 		status, ctype, body := HandleGit(owner, name, req.method, path, req.query, req.gitProtocol, req.body)
-		return dispatchResponse{status, ctype, body, true}
+		return dispatchResponse{status, ctype, body, true, ""}
 	}
 
 	// GraphQL
 	if path == "/api/graphql" && req.method == "POST" {
 		status, body := HandleGraphQL(token, req.body)
-		return dispatchResponse{status, "application/json; charset=utf-8", body, false}
+		return dispatchResponse{status, "application/json; charset=utf-8", body, false, ""}
 	}
 
 	// MCP
@@ -294,7 +299,7 @@ func dispatch(req *rawRequest) dispatchResponse {
 			}
 		}
 		r := HandleMcp(token, req.body, malformed)
-		return dispatchResponse{r.status, "application/json; charset=utf-8", r.body, false}
+		return dispatchResponse{r.status, "application/json; charset=utf-8", r.body, false, ""}
 	}
 
 	// REST v3
@@ -305,10 +310,10 @@ func dispatch(req *rawRequest) dispatchResponse {
 			owner = urlUnescape(m[1])
 		}
 		r := HandleRest(req.method, path, path, req.query, token, owner, req.body)
-		return dispatchResponse{r.status, "application/json; charset=utf-8", r.body, false}
+		return dispatchResponse{r.status, "application/json; charset=utf-8", r.body, false, ""}
 	}
 
-	return dispatchResponse{404, "application/json; charset=utf-8", []byte("{\"message\":\"Not Found\"}\n"), false}
+	return dispatchResponse{404, "application/json; charset=utf-8", []byte("{\"message\":\"Not Found\"}\n"), false, ""}
 }
 
 var gitRouteRe = regexp.MustCompile(`^/([^/]+)/([^/]+)\.git(/|$)`)
@@ -321,9 +326,9 @@ func writeResponse(buf *bytes.Buffer, method string, res dispatchResponse, keepA
 	if res.contentType != "" {
 		buf.WriteString("content-type: " + res.contentType + "\r\n")
 	}
-	// every REST reply carries a request id (git surfaces: our TS entry did not add one either)
+	// every non-git reply carries a request id minted under the dispatch mutex
 	if !res.gitBody {
-		buf.WriteString("x-github-request-id: " + RequestID() + "\r\n")
+		buf.WriteString("x-github-request-id: " + res.requestID + "\r\n")
 	}
 	fmt.Fprintf(buf, "content-length: %d\r\n", len(res.body))
 	if res.gitBody {

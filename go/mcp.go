@@ -14,8 +14,8 @@ const mcpServerVersion = "1.0.0"
 var mcpSupportedVersions = []string{"2026-07-28", "2025-11-25", "2025-06-18"}
 
 const (
-	mcpParseError    = -32700
-	mcpInvalidParams = -32602
+	mcpParseError     = -32700
+	mcpInvalidParams  = -32602
 	mcpMethodNotFound = -32601
 )
 
@@ -542,7 +542,6 @@ func HandleMcp(token string, body []byte, malformed bool) mcpResult {
 	}
 	return handleMcpRpc(method, params, idOf(obj))
 }
-
 
 func omProp(schema *OMap) any {
 	if v, ok := schema.Get("properties"); ok {

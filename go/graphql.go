@@ -28,7 +28,6 @@ func decodeGlobalID(gid string) (typ, id string, ok bool) {
 	return text[:sep], text[sep+1:], true
 }
 
-
 func decodeGlobalId(gid string) (string, string, bool) {
 	raw, err := base64.StdEncoding.DecodeString(gid)
 	if err != nil {
@@ -134,9 +133,9 @@ type FieldNode struct {
 }
 
 type OpNode struct {
-	Kind   string // "query" | "mutation"
+	Kind    string // "query" | "mutation"
 	VarDefs map[string]string
-	Fields []FieldNode
+	Fields  []FieldNode
 }
 
 func gqlParseValue(p *gqlParser, vars map[string]any) (any, error) {
