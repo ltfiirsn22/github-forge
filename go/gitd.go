@@ -382,35 +382,6 @@ func objectsForCommit(repo *Repo, sha string, out map[string]*GitObj) {
 	emitTree(parsed.Tree)
 }
 
-// walkCommits walks ancestry from a tip, bounded by shallow boundaries.
-func walkCommits(repo *Repo, tip string, shallow map[string]bool) []string {
-	var seen []string
-	visited := map[string]bool{}
-	stack := []string{tip}
-	for len(stack) > 0 {
-		sha := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		if visited[sha] {
-			continue
-		}
-		c, ok := repo.Commits[sha]
-		if !ok {
-			continue
-		}
-		visited[sha] = true
-		seen = append(seen, sha)
-		if shallow[sha] {
-			continue
-		}
-		for _, p := range c.Parents {
-			if !visited[p] {
-				stack = append(stack, p)
-			}
-		}
-	}
-	return seen
-}
-
 // levelsFromTip BFS-walks ancestry with depth labels, bounded by maxDepth.
 func levelsFromTip(repo *Repo, tip string, haves map[string]bool, maxDepth int) [][2]string {
 	var out [][2]string
@@ -697,7 +668,7 @@ func handleReceivePack(repo *Repo, body []byte) []byte {
 	var commands []pushCommand
 	caps := ""
 	seenCommands := false
-	packStart := len(body)
+	var packStart int // assigned on every path below; the init was ineffectual
 	{
 		off := 0
 		for off+4 <= len(body) {

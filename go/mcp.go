@@ -28,10 +28,6 @@ func mcpRespond(status int, body any) mcpResult {
 	return mcpResult{status, jsonBody(body)}
 }
 
-func rpcResultOMap(id any, result *OMap) *OMap {
-	return NewOMap().Set("jsonrpc", "2.0").Set("id", id).Set("result", result)
-}
-
 func rpcResultAny(id any, result any) *OMap {
 	return NewOMap().Set("jsonrpc", "2.0").Set("id", id).Set("result", result)
 }

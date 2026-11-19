@@ -153,9 +153,6 @@ func writeJSONFloat(b []byte, f float64) []byte {
 	return strconv.AppendFloat(b, f, 'g', -1, 64)
 }
 
-// jsonString is the quoted form of s alone (helper for embedded literals).
-func jsonString(s string) string { return string(writeJSONString(nil, s)) }
-
 // parseSimpleJSON decodes a flat JSON object body into map[string]any (numbers as float64,
 // like JS). It is a minimal recursive-descent decoder — enough for the suite's request bodies.
 func parseSimpleJSON(data []byte) (any, error) {

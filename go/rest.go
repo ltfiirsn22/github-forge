@@ -45,18 +45,6 @@ func msgRest(status int, message string, headers ...[2]string) restResult {
 	return sendRest(status, NewOMap().Set("message", message), headers...)
 }
 
-// parseJSONBody decodes the request body ("" when none).
-func parseJSONBody(body []byte) any {
-	if len(body) == 0 {
-		return nil
-	}
-	v, err := parseSimpleJSON(body)
-	if err != nil {
-		return nil
-	}
-	return v
-}
-
 func bodyMap(body any) *OMap {
 	if m, ok := body.(*OMap); ok {
 		return m

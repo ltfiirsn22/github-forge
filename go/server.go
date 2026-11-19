@@ -29,8 +29,6 @@ const maxHeaderTotal = 65536
 type jsonRaw []byte
 
 var dispatchMu sync.Mutex // one request dispatched at a time (event-loop semantics)
-var connCounter int64
-
 type rawRequest struct {
 	method        string
 	path          string // decoded-free raw path (percent forms kept for query parsing)
@@ -60,7 +58,7 @@ func handleConn(conn net.Conn) {
 	br := bufio.NewReaderSize(conn, 64*1024)
 	writeBuf := new(bytes.Buffer)
 	for {
-		conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+		_ = conn.SetReadDeadline(time.Now().Add(120 * time.Second))
 		req, ok := readRawRequest(br, conn)
 		if !ok {
 			return
@@ -68,7 +66,7 @@ func handleConn(conn net.Conn) {
 		response := dispatch(req)
 		writeBuf.Reset()
 		writeResponse(writeBuf, req.method, response, req.keepAlive)
-		conn.SetWriteDeadline(time.Now().Add(60 * time.Second))
+		_ = conn.SetWriteDeadline(time.Now().Add(60 * time.Second))
 		if _, err := conn.Write(writeBuf.Bytes()); err != nil {
 			return
 		}
@@ -322,12 +320,6 @@ func dispatch(req *rawRequest) (response dispatchResponse) {
 
 	response = dispatchResponse{404, "application/json; charset=utf-8", []byte("{\"message\":\"Not Found\"}\n"), false, "", nil}
 	return response
-}
-
-// dispatched runs dispatch and stamps the mutex-minted request id onto the result (the dispatch
-// body returns unnamed literals; the id must be minted under the lock, so it is applied here).
-func dispatched(req *rawRequest) dispatchResponse {
-	return dispatch(req)
 }
 
 var gitRouteRe = regexp.MustCompile(`^/([^/]+)/([^/]+)\.git(/|$)`)

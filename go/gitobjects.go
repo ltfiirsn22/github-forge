@@ -573,7 +573,7 @@ func WritePack(objects []*GitObj) []byte {
 		b.Write(hdr)
 		zw := zlibWriterPool.Get().(*zlib.Writer)
 		zw.Reset(&b)
-		zw.Write(obj.Data)
+		_, _ = zw.Write(obj.Data) // writes to a bytes.Buffer cannot fail
 		zw.Close()
 		zlibWriterPool.Put(zw)
 	}

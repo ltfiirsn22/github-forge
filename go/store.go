@@ -118,7 +118,6 @@ type Repo struct {
 	refCacheGen    int                // generation the RefListCache was built at
 	RefListCache   []RefEntry
 	PackCache      map[string][]byte // fetch answer cache, cleared on ref change
-	packKeys       []string
 	IssueBodyCache map[int]issueBodyCacheEntry
 }
 
