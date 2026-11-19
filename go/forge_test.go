@@ -40,7 +40,7 @@ func TestApplyDelta(t *testing.T) {
 	// insert + copy + literal ops built by hand
 	delta := append([]byte{byte(len(base)), 20}, // base size, target size varints
 		0x10|0x01, 0x04, // copy 4 from offset 0
-		5, 'X','Y','Z','Q','W', // literal 5
+		5, 'X', 'Y', 'Z', 'Q', 'W', // literal 5
 		0x80|0x01, 0x0f, // copy 15 from offset 1 (size 0x0f)
 	)
 	_ = delta

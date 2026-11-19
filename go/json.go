@@ -72,6 +72,11 @@ func writeJSON(b []byte, v any) []byte {
 	case jsonRaw:
 		return append(b, x...)
 	case *OMap:
+		if x == nil {
+			// a typed-nil *OMap (e.g. the "data" of a failed GraphQL operation) must encode as
+			// null, not panic on its nil key slice (A.1 stack trace: json.go:76)
+			return append(b, "null"...)
+		}
 		b = append(b, '{')
 		for i, k := range x.keys {
 			if i > 0 {
