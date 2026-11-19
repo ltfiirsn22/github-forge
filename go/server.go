@@ -378,7 +378,7 @@ func forgeMain() int {
 			port = n
 		}
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+	listener, err := net.Listen("tcp", ":"+strconv.Itoa(port)) // all interfaces: the env dials us from its own pod
 	if err != nil {
 		log.Printf("[forge] listen: %v", err)
 		return 1
