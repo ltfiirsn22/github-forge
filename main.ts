@@ -1,7 +1,7 @@
-// forge entry lifecycle, rewritten for authorship clarity: bind an ephemeral port, tell the env
-// that port, then poll until the trial ends. The suite scores the server app.ts builds; this file
-// only talks to the harness.
-import { createApp } from './app.ts';
+// forge entry lifecycle: launch the Go core (go/forge), tell the env its port, then poll until
+// the trial ends. The Go core serves every surface (git smart HTTP, REST v3, GraphQL, MCP);
+// this file only talks to the harness.
+import { launchGoCore } from './go-serve.ts';
 
 // where the grading env lives; without it there is nothing to register with
 const ENV_URL = (process.env.MAKEFUN_ENV_URL ?? '').replace(/\/+$/, '');
@@ -58,20 +58,18 @@ async function waitForDone(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const server = createApp();
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, () => resolve());
-  });
-  const address = server.address();
-  if (address === null || typeof address === 'string') throw new Error('the server did not bind an ephemeral TCP port');
-  process.stdout.write(`[entry] listening on port ${address.port}\n`);
+  const { child, port } = await launchGoCore();
+  // if the launcher is killed, take the core down with it instead of orphaning it
+  process.once('SIGINT', () => { child.kill(); process.exit(130); });
+  process.once('SIGTERM', () => { child.kill(); process.exit(143); });
 
-  await register(address.port);
+  process.stdout.write(`[entry] go core listening on port ${port}\n`);
+  await register(port);
   process.stdout.write('[entry] registered; waiting for the env to say done\n');
 
   await waitForDone();
-  server.close();
+  child.kill();
+  await new Promise<void>((resolve) => child.once('close', () => resolve()));
   process.stdout.write('[entry] done\n');
 }
 
