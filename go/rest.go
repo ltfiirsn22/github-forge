@@ -606,7 +606,7 @@ func handleRepoSub(method, rawURL, query, token, ownerName string, repo *Repo, n
 }
 
 var reIssuePath = regexp.MustCompile(`^/issues/(\d+)(/comments)?$`)
-var rePullPath = regexp.MustCompile(`^/issues/(\d+)(/(files|merge))?$`)
+var rePullPath = regexp.MustCompile(`^/pulls/(\d+)(/(files|merge))?$`)
 
 // ---------- contents ----------
 
