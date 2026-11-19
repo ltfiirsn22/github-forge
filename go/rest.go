@@ -224,8 +224,9 @@ func absInt(n int) int {
 	return n
 }
 
-// HandleRest serves /api/v3. path = full request path, restP = path without /api/v3 prefix.
-func HandleRest(method, path, rawURL, query, token, owner string, body []byte) restResult {
+// HandleRest serves /api/v3. path = full request path, rawURL = path+query, host = the request's
+// Host header (Link headers must stay on the client's origin).
+func HandleRest(method, path, rawURL, query, token, owner, host string, body []byte) restResult {
 	ctxOwnerFallback = owner
 	authed := token != ""
 	p := strings.TrimPrefix(path, "/api/v3")
@@ -298,7 +299,9 @@ func HandleRest(method, path, rawURL, query, token, owner string, body []byte) r
 		}
 		var headers [][2]string
 		if page*perPage < len(all) {
-			host := "entry.local"
+			if host == "" {
+				host = "127.0.0.1"
+			}
 			base := "http://" + host + strings.SplitN(rawURL, "?", 2)[0]
 			last := (len(all) + perPage - 1) / perPage
 			link := fmt.Sprintf(`<%s?per_page=%d&page=%d>; rel="next", <%s?per_page=%d&page=%d>; rel="last"`,

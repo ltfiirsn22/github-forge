@@ -674,7 +674,13 @@ func decodeCursor(cursor string) *int {
 
 // ---------- executor ----------
 
-func executeOperation(op *OpNode) (*OMap, []*OMap) {
+func executeOperation(op *OpNode) (dataOut *OMap, errsOut []*OMap) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			dataOut = nil
+			errsOut = []*OMap{gqlErrEntry(fmt.Sprintf("%v", rec))}
+		}
+	}()
 	data := NewOMap()
 	var errs []*OMap
 	for _, f := range op.Fields {
@@ -817,10 +823,10 @@ func resolveGqlNode(fields []FieldNode, source *OMap) *OMap {
 	for _, f := range fields {
 		key := fieldKey(f)
 		if _, ok := source.Get(f.Name); !ok {
-			// unknown field: throw semantics handled by caller via nil marker; suite documents
-			// only use known viewer fields, so mirror TS's throw as a null
-			out.Set(key, nil)
-			continue
+			// an unknown field is a validation failure: the suite's invalid-field check asserts the
+			// field name appears in an errors array (HTTP 200), which executeOperation produces
+			// from the panic this recovery turns into an error result.
+			panic(fmt.Sprintf("unknown field: %s", f.Name))
 		}
 		v, _ := source.Get(f.Name)
 		out.Set(key, v)

@@ -35,6 +35,7 @@ type rawRequest struct {
 	method        string
 	path          string // decoded-free raw path (percent forms kept for query parsing)
 	query         string
+	host          string
 	authorization string
 	gitProtocol   string
 	keepAlive     bool
@@ -153,6 +154,10 @@ func readRawRequest(br *bufio.Reader, conn net.Conn) (*rawRequest, bool) {
 			}
 		case "authorization":
 			req.authorization = value
+		case "host":
+			if req.host == "" {
+				req.host = value
+			}
 		case "git-protocol":
 			req.gitProtocol = value
 		}
@@ -245,6 +250,7 @@ type dispatchResponse struct {
 	body        []byte
 	gitBody     bool   // git responses are raw bytes, no JSON newline
 	requestID   string // minted under the dispatch mutex (deterministic counter)
+	headers     [][2]string
 }
 
 func dispatch(req *rawRequest) (response dispatchResponse) {
@@ -256,7 +262,7 @@ func dispatch(req *rawRequest) (response dispatchResponse) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			log.Printf("forge panic: %v", rec)
-			response = dispatchResponse{500, "application/json; charset=utf-8", []byte("{\"message\":\"Internal Server Error\"}\n"), false, ""}
+			response = dispatchResponse{500, "application/json; charset=utf-8", []byte("{\"message\":\"Internal Server Error\"}\n"), false, "", nil}
 		}
 		// still under the mutex (this defer runs before the unlock defer): the id rides every return
 		response.requestID = RequestID()
@@ -266,7 +272,7 @@ func dispatch(req *rawRequest) (response dispatchResponse) {
 
 	// healthz (no auth)
 	if req.method == "GET" && path == "/healthz" {
-		return dispatchResponse{200, "application/json; charset=utf-8", []byte("{\"ok\":true}\n"), false, ""}
+		return dispatchResponse{200, "application/json; charset=utf-8", []byte("{\"ok\":true}\n"), false, "", nil}
 	}
 
 	token := ""
@@ -282,13 +288,13 @@ func dispatch(req *rawRequest) (response dispatchResponse) {
 		owner := urlUnescape(m[1])
 		name := urlUnescape(m[2])
 		status, ctype, body := HandleGit(owner, name, req.method, path, req.query, req.gitProtocol, req.body)
-		return dispatchResponse{status, ctype, body, true, ""}
+		return dispatchResponse{status, ctype, body, true, "", nil}
 	}
 
 	// GraphQL
 	if path == "/api/graphql" && req.method == "POST" {
 		status, body := HandleGraphQL(token, req.body)
-		return dispatchResponse{status, "application/json; charset=utf-8", body, false, ""}
+		return dispatchResponse{status, "application/json; charset=utf-8", body, false, "", nil}
 	}
 
 	// MCP
@@ -300,7 +306,7 @@ func dispatch(req *rawRequest) (response dispatchResponse) {
 			}
 		}
 		r := HandleMcp(token, req.body, malformed)
-		return dispatchResponse{r.status, "application/json; charset=utf-8", r.body, false, ""}
+		return dispatchResponse{r.status, "application/json; charset=utf-8", r.body, false, "", nil}
 	}
 
 	// REST v3
@@ -310,11 +316,11 @@ func dispatch(req *rawRequest) (response dispatchResponse) {
 		if m := restOwnerRe.FindStringSubmatch(restPath); m != nil {
 			owner = urlUnescape(m[1])
 		}
-		r := HandleRest(req.method, path, path, req.query, token, owner, req.body)
-		return dispatchResponse{r.status, "application/json; charset=utf-8", r.body, false, ""}
+		r := HandleRest(req.method, path, path, req.query, token, owner, req.host, req.body)
+		return dispatchResponse{r.status, "application/json; charset=utf-8", r.body, false, "", r.headers}
 	}
 
-	response = dispatchResponse{404, "application/json; charset=utf-8", []byte("{\"message\":\"Not Found\"}\n"), false, ""}
+	response = dispatchResponse{404, "application/json; charset=utf-8", []byte("{\"message\":\"Not Found\"}\n"), false, "", nil}
 	return response
 }
 
@@ -337,6 +343,9 @@ func writeResponse(buf *bytes.Buffer, method string, res dispatchResponse, keepA
 	// every non-git reply carries a request id minted under the dispatch mutex
 	if !res.gitBody {
 		buf.WriteString("x-github-request-id: " + res.requestID + "\r\n")
+	}
+	for _, h := range res.headers {
+		buf.WriteString(h[0] + ": " + h[1] + "\r\n")
 	}
 	fmt.Fprintf(buf, "content-length: %d\r\n", len(res.body))
 	if res.gitBody {
